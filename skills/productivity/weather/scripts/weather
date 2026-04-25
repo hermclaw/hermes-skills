@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""
+Weather report using Open-Meteo API (free, no API key needed).
+
+Usage:
+  weather [zipcode] [tomorrow]
+
+Examples:
+  weather              # Auto-detect from context/memory, or prompt
+  weather 11201        # Specific zipcode
+  weather 11201 tomorrow  # Tomorrow's forecast
+
+Environment:
+  WEATHER_ZIPCODE      # Override default zipcode
+"""
+
+import json
+import os
+import re
+import sys
+import urllib.request
+import urllib.parse
+from datetime import datetime
+
+
+def get_zipcode_from_context():
+    """Try to extract zipcode from user's memory file."""
+    memories_dir = os.path.expanduser('~/.hermes-openrouter/memories')
+    user_md = os.path.join(memories_dir, 'USER.md')
+    
+    if os.path.exists(user_md):
+        try:
+            with open(user_md) as f:
+                content = f.read()
+            # Look for patterns like "Location: 11201" or "zipcode 11201"
+            patterns = [
+                r'Location:\s*(\d{5})',
+                r'zipcode\s*:?\s*(\d{5})',
+                r'zip:\s*(\d{5})',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+        except:
+            pass
+    return None
+
+
+def ask_for_zipcode():
+    """Interactive prompt for zipcode."""
+    print("No zipcode configured.", file=sys.stderr)
+    print("\nOptions:", file=sys.stderr)
+    print("  1. Pass zipcode as argument: weather 11201", file=sys.stderr)
+    print("  2. Set env var: export WEATHER_ZIPCODE=11201", file=sys.stderr)
+    print("  3. Add to your context: echo 'Location: 11201' >> ~/.hermes-openrouter/memories/USER.md", file=sys.stderr)
+    
+    # Try interactive input if stdin is a tty
+    if sys.stdin.isatty():
+        try:
+            zipcode = input("\nEnter zipcode: ").strip()
+            if re.match(r'^\d{5}$', zipcode):
+                # Save to USER.md for future use
+                save_to_context(zipcode)
+                return zipcode
+        except EOFError:
+            pass
+    
+    return None
+
+
+def save_to_context(zipcode):
+    """Save zipcode to USER.md for future use."""
+    memories_dir = os.path.expanduser('~/.hermes-openrouter/memories')
+    user_md = os.path.join(memories_dir, 'USER.md')
+    
+    try:
+        os.makedirs(memories_dir, exist_ok=True)
+        with open(user_md, 'a') as f:
+            f.write(f"\nLocation: {zipcode} (auto-added by weather skill)\n")
+        print(f"Saved zipcode {zipcode} to context for future use.", file=sys.stderr)
+    except Exception as e:
+        print(f"Could not save to context: {e}", file=sys.stderr)
+
+
+def get_coordinates(zipcode):
+    """Convert zipcode to lat/lon using Nominatim (OpenStreetMap)."""
+    url = f"https://nominatim.openstreetmap.org/search?postalcode={zipcode}&countrycodes=us&format=json&limit=1"
+    req = urllib.request.Request(url, headers={'User-Agent': 'HermesAgent/1.0'})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        data = json.loads(response.read().decode())
+    if data:
+        return float(data[0]['lat']), float(data[0]['lon'])
+    raise RuntimeError(f"Could not geocode US zipcode {zipcode}")
+
+
+def get_weather(lat, lon):
+    """Fetch weather from Open-Meteo (free, no API key)."""
+    params = {
+        'latitude': lat,
+        'longitude': lon,
+        'current': 'temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m',
+        'daily': 'temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code',
+        'timezone': 'America/New_York',
+        'forecast_days': 2
+    }
+    url = f"https://api.open-meteo.com/v1/forecast?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=10) as response:
+        return json.loads(response.read().decode())
+
+
+WEATHER_CODES = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    56: "Light freezing drizzle", 57: "Dense freezing drizzle",
+    61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    66: "Light freezing rain", 67: "Heavy freezing rain",
+    71: "Slight snow fall", 73: "Moderate snow fall", 75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+    85: "Slight snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail",
+}
+
+WEATHER_EMOJI = {
+    0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
+    45: "🌫️", 48: "🌫️",
+    51: "🌦️", 53: "🌦️", 55: "🌧️", 56: "🌦️", 57: "🌧️",
+    61: "🌧️", 63: "🌧️", 65: "⛈️",
+    66: "🌧️", 67: "⛈️",
+    71: "🌨️", 73: "❄️", 75: "❄️", 77: "❄️",
+    80: "🌦️", 81: "🌧️", 82: "⛈️",
+    85: "🌨️", 86: "❄️",
+    95: "⛈️", 96: "⛈️", 99: "⛈️",
+}
+
+
+def format_report(zipcode, weather_data, day_offset=0):
+    """Create formatted weather report."""
+    now = datetime.now().strftime("%A, %B %d, %Y")
+    current = weather_data['current']
+    daily = weather_data['daily']
+    
+    # Forecast day
+    temp_max_c = daily['temperature_2m_max'][day_offset]
+    temp_min_c = daily['temperature_2m_min'][day_offset]
+    precip = daily['precipitation_probability_max'][day_offset]
+    day_code = daily['weather_code'][day_offset]
+    day_desc = WEATHER_CODES.get(day_code, "Unknown")
+    day_emoji = WEATHER_EMOJI.get(day_code, "🌡️")
+    
+    # Current conditions
+    temp_c = current['temperature_2m']
+    temp_f = temp_c * 9/5 + 32
+    humidity = current['relative_humidity_2m']
+    wind_kmh = current['wind_speed_10m']
+    wind_mph = wind_kmh * 0.621371
+    current_code = current['weather_code']
+    current_desc = WEATHER_CODES.get(current_code, "Unknown")
+    current_emoji = WEATHER_EMOJI.get(current_code, "🌡️")
+
+    day_label = "Tomorrow's" if day_offset == 1 else "Today's"
+    
+    return f"""🌤️ **Weather Report** 🌤️
+📍 Location: {zipcode}
+📅 {now}
+
+**Current Conditions**
+{current_emoji} {current_desc}
+🌡️ {temp_c:.1f}°C / {temp_f:.1f}°F
+💧 Humidity: {humidity}%
+💨 Wind: {wind_kmh:.0f} km/h ({wind_mph:.0f} mph)
+
+**{day_label} Forecast**
+{day_emoji} {day_desc}
+⏫ High: {temp_max_c:.1f}°C / {temp_max_c*9/5+32:.1f}°F
+⏬ Low: {temp_min_c:.1f}°C / {temp_min_c*9/5+32:.1f}°F
+🌧️ Precipitation: {precip}%
+
+☕ Have a great day!
+"""
+
+
+def main():
+    import os, time
+    os.environ['TZ'] = 'America/New_York'
+    time.tzset()
+    
+    # Parse args
+    args = sys.argv[1:]
+    
+    # Find zipcode (first numeric arg) and day_offset
+    zipcode = None
+    day_offset = 0
+    
+    for arg in args:
+        if arg.isdigit() and len(arg) == 5:
+            zipcode = arg
+        elif arg.lower() == 'tomorrow':
+            day_offset = 1
+    
+    # Priority 1: Command line arg (already set above)
+    
+    # Priority 2: Environment variable override
+    if not zipcode:
+        zipcode = os.getenv('WEATHER_ZIPCODE')
+    
+    # Priority 3: Check context (USER.md memory)
+    if not zipcode:
+        zipcode = get_zipcode_from_context()
+    
+    # Priority 4: Ask the user (interactive) or error
+    if not zipcode:
+        zipcode = ask_for_zipcode()
+    
+    if not zipcode:
+        print("\n❌ Error: No zipcode provided.", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        lat, lon = get_coordinates(zipcode)
+        data = get_weather(lat, lon)
+        report = format_report(zipcode, data, day_offset=day_offset)
+        print(report)
+    except Exception as e:
+        print(f"❌ Weather report failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

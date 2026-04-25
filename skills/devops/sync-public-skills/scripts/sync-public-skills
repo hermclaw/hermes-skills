@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""
+Sync selected skills from ~/.hermes-openrouter/skills/ to github-repos/skills/
+Uses ~/.hermes-openrouter/public-skills.txt as the whitelist.
+Includes security scanning to prevent accidental secret exposure.
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HERMES_DIR = Path.home() / ".hermes-openrouter"
+SKILLS_SRC = HERMES_DIR / "skills"
+REPO_DIR = HERMES_DIR / "github-repos" / "skills"
+SKILLS_DST = REPO_DIR / "skills"
+CONFIG_FILE = HERMES_DIR / "public-skills.txt"
+
+# Regex patterns for common secrets
+SECRET_PATTERNS = {
+    "API Key (generic)": r"(?i)(api[_-]?key|apikey)\s*[:=]\s*['\"][a-zA-Z0-9]{16,}['\"]",
+    "AWS Access Key ID": r"AKIA[0-9A-Z]{16}",
+    "AWS Secret Access Key": r"(?i)aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*['\"][a-zA-Z0-9/+=]{40}['\"]",
+    "Private Key": r"-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----",
+    "GitHub Token": r"ghp_[a-zA-Z0-9]{36}",
+    "GitHub OAuth": r"gho_[a-zA-Z0-9]{36}",
+    "Slack Token": r"xox[baprs]-[a-zA-Z0-9]{10,48}",
+    "Slack Webhook": r"https://hooks\.slack\.com/services/[A-Z0-9/]+",
+    "Telegram Bot Token": r"[0-9]{9,10}:[a-zA-Z0-9_-]{35}",
+    "OpenAI API Key": r"sk-[a-zA-Z0-9]{48}",
+    "Generic Token": r"(?i)(token|secret|password|passwd|pwd)\s*[:=]\s*['\"][a-zA-Z0-9]{16,}['\"]",
+    "Bearer Token": r"(?i)bearer\s+[a-zA-Z0-9_-]{20,}",
+    "Base64 High Entropy": r"[a-zA-Z0-9+/]{40,}={0,2}",
+}
+
+FILE_EXTENSIONS_TO_SCAN = {'.py', '.md', '.yaml', '.yml', '.json', '.sh', '.txt', '.toml'}
+
+def read_config():
+    """Read list of skills to sync from config file."""
+    if not CONFIG_FILE.exists():
+        print(f"Config not found: {CONFIG_FILE}")
+        print("Create it with skill names to sync (one per line).")
+        sys.exit(1)
+    
+    skills = []
+    with open(CONFIG_FILE) as f:
+        for line in f:
+            line = line.split('#')[0].strip()
+            if line:
+                skills.append(line)
+    return skills
+
+def has_tirith():
+    """Check if tirith command is available."""
+    try:
+        subprocess.run(["tirith", "--version"], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def run_tirith_scan(path):
+    """Run tirith security scan on a skill directory."""
+    findings = []
+    try:
+        result = subprocess.run(
+            ["tirith", "scan", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0 and result.stderr:
+            findings.append(f"Tirith scan error: {result.stderr}")
+        elif result.stdout:
+            # Parse tirith output (format may vary)
+            for line in result.stdout.split('\n'):
+                if 'secret' in line.lower() or 'token' in line.lower() or 'key' in line.lower():
+                    findings.append(line.strip())
+    except subprocess.TimeoutExpired:
+        findings.append("Tirith scan timed out")
+    except Exception as e:
+        findings.append(f"Tirith scan failed: {e}")
+    return findings
+
+def scan_file_for_secrets(file_path):
+    """Scan a single file for secret patterns."""
+    findings = []
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except Exception:
+        return findings
+    
+    for pattern_name, pattern in SECRET_PATTERNS.items():
+        matches = re.finditer(pattern, content)
+        for match in matches:
+            # Get line number
+            line_num = content[:match.start()].count('\n') + 1
+            snippet = match.group()[:50] + "..." if len(match.group()) > 50 else match.group()
+            findings.append({
+                "file": str(file_path),
+                "line": line_num,
+                "type": pattern_name,
+                "snippet": snippet
+            })
+    
+    return findings
+
+def scan_skill_for_secrets(skill_path):
+    """Scan an entire skill directory for secrets."""
+    all_findings = []
+    tirith_available = has_tirith()
+    
+    # Run tirith if available
+    if tirith_available:
+        tirith_findings = run_tirith_scan(skill_path)
+        if tirith_findings:
+            all_findings.extend([{"type": "Tirith", "details": f} for f in tirith_findings])
+    
+    # Run regex scan on all relevant files
+    for root, _, files in os.walk(skill_path):
+        for filename in files:
+            if any(filename.endswith(ext) for ext in FILE_EXTENSIONS_TO_SCAN):
+                file_path = Path(root) / filename
+                findings = scan_file_for_secrets(file_path)
+                all_findings.extend(findings)
+    
+    return all_findings, tirith_available
+
+def sync_skill(skill_name, dry_run=False):
+    """Copy a skill from source to destination after security check."""
+    src = SKILLS_SRC / skill_name
+    dst = SKILLS_DST / skill_name
+    
+    if not src.exists():
+        print(f"⚠️  Skill not found: {skill_name}")
+        return False, "not_found"
+    
+    # Security scan
+    print(f"🔍 Scanning {skill_name} for secrets...")
+    findings, tirith_ran = scan_skill_for_secrets(src)
+    
+    if findings:
+        print(f"🚨 SECURITY ALERT: Found {len(findings)} potential secret(s) in {skill_name}:")
+        for f in findings[:5]:  # Show first 5
+            if "file" in f:
+                print(f"   - {f['type']}: {f['file']}:{f['line']}")
+                print(f"     Snippet: {f['snippet']}")
+            else:
+                print(f"   - {f.get('details', str(f))}")
+        if len(findings) > 5:
+            print(f"   ... and {len(findings) - 5} more")
+        print(f"\n❌ BLOCKED: {skill_name} not synced due to security concerns.")
+        print("   Review and remove secrets before syncing.")
+        return False, "secrets_found"
+    
+    scan_msg = " (tirith + regex)" if tirith_ran else " (regex only)"
+    print(f"   ✓ Clean{scan_msg}")
+    
+    if dry_run:
+        print(f"   [DRY RUN] Would sync: {skill_name}")
+        return True, "dry_run"
+    
+    # Create parent dirs
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Remove old version if exists
+    if dst.exists():
+        shutil.rmtree(dst)
+    
+    # Copy entire skill directory
+    shutil.copytree(src, dst)
+    print(f"✅ Synced: {skill_name}")
+    return True, "synced"
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Sync skills to public GitHub repo")
+    parser.add_argument("--dry-run", "-n", action="store_true", help="Preview without copying")
+    parser.add_argument("--force", "-f", action="store_true", help="Sync even with security warnings")
+    args = parser.parse_args()
+    
+    # Ensure repo structure exists
+    REPO_DIR.mkdir(parents=True, exist_ok=True)
+    SKILLS_DST.mkdir(parents=True, exist_ok=True)
+    # Removed standalone scripts/ - all scripts must live inside skills
+    
+    
+    skills = read_config()
+    
+    if not skills:
+        print("No skills listed in config. Add some to ~/.hermes-openrouter/public-skills.txt")
+        sys.exit(0)
+    
+    mode_str = "(dry run)" if args.dry_run else ""
+    print(f"Syncing {len(skills)} skill(s) {mode_str}")
+    print(f"Destination: {REPO_DIR}")
+    print(f"Security scanning: tirith + regex patterns")
+    print()
+    
+    synced = 0
+    blocked = 0
+    failed = 0
+    
+    for skill in skills:
+        success, status = sync_skill(skill, dry_run=args.dry_run)
+        if status == "synced":
+            synced += 1
+        elif status == "secrets_found":
+            blocked += 1
+        elif status == "not_found":
+            failed += 1
+        print()
+    
+    print("=" * 50)
+    print(f"Results: {synced} synced, {blocked} blocked (secrets), {failed} not found")
+    
+    if synced > 0 and not args.dry_run:
+        print()
+        print("Next steps:")
+        print(f"  cd {REPO_DIR}")
+        print("  git add .")
+        print('  git commit -m "Sync skills"')
+        print("  git push")
+    
+    if blocked > 0:
+        print()
+        print("⚠️  Some skills were blocked. Review and clean before retrying.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
