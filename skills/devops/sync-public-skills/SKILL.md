@@ -91,6 +91,26 @@ git add . && git commit -m "Initial sync"
 git push -u origin main
 ```
 
+## Rewriting History
+
+If the repo's commit history contains identifiable information, squash everything into a single orphan commit:
+
+```bash
+cd ~/.hermes-openrouter/github-repos/skills
+git checkout --orphan fresh
+git add -A
+git commit -m "Initial commit"
+git branch -D main
+git branch -m main
+git push --force --set-upstream origin main
+```
+
+For future changes, keep it as one commit by amending instead of creating new ones:
+
+```bash
+git add . && git commit --amend --no-edit && git push --force
+```
+
 ## Meta-Recursive Nature
 
 This skill publishes itself! Once synced to your public repo, it can clone and sync your other skills, including future versions of itself.
