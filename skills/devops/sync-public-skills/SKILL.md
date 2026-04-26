@@ -79,36 +79,13 @@ git branch -m main
 git config user.name "hermclaw"
 git config user.email "hermclaw@users.noreply.github.com"
 
-# Create GitHub repo via API (requires HERMCLAW_GITHUB_TOKEN)
-curl -H "Authorization: Bearer $HERMCLAW_GITHUB_TOKEN" \
-     -H "Accept: application/vnd.github+json" \
-     https://api.github.com/user/repos \
-     -d '{"name":"hermes-skills","description":"Public Hermes skills","private":false}'
+# Create GitHub repo via gh CLI
+gh repo create hermes-skills --public --description "Public Hermes skills"
 
 # Add remote and push
 git remote add origin https://github.com/hermclaw/hermes-skills.git
 git add . && git commit -m "Initial sync"
 git push -u origin main
-```
-
-## Rewriting History
-
-If the repo's commit history contains identifiable information, squash everything into a single orphan commit:
-
-```bash
-cd ~/.hermes-openrouter/github-repos/skills
-git checkout --orphan fresh
-git add -A
-git commit -m "Initial commit"
-git branch -D main
-git branch -m main
-git push --force --set-upstream origin main
-```
-
-For future changes, keep it as one commit by amending instead of creating new ones:
-
-```bash
-git add . && git commit --amend --no-edit && git push --force
 ```
 
 ## Meta-Recursive Nature
