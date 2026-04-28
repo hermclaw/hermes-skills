@@ -25,8 +25,6 @@ Edit `~/.hermes-openrouter/public-skills.txt`:
 
 ```text
 # One skill per line
-devops/openrouter-usage
-productivity/train-report
 ```
 
 ## Usage
@@ -58,7 +56,6 @@ If secrets are found, the skill is blocked from syncing.
 github-repos/skills/
 └── skills/
     ├── devops/
-    │   ├── openrouter-usage/
     │   └── sync-public-skills/
     └── productivity/
         └── train-report/

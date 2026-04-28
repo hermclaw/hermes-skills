@@ -17,7 +17,6 @@ This repository follows a **curation over collection** approach:
 | Skill | Path | Description |
 |-------|------|-------------|
 | **sync-public-skills** | `devops/sync-public-skills/` | Meta-skill that publishes selected skills to this repo. Scans for secrets before syncing. |
-| **openrouter-usage** | `devops/openrouter-usage/` | Check OpenRouter API usage, credits, and spending statistics. |
 | **mise** | `devops/mise/` | Per-project toolchain version management. Replace asdf/rbenv/nvm — supports Ruby, Node.js, Python, Bun, Go, and more. |
 
 ### Utilities
