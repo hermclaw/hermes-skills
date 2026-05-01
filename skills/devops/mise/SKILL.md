@@ -18,7 +18,7 @@ mise (https://mise.jdx.dev/) is a polyglot version manager that manages tool ver
 
 ### Installation
 
-Installed via `curl https://mise.run | sh` at `~/.local/bin/mise`.
+Installed via `curl https://mise.run | sh`. Actual location: `/usr/local/bin/mise`.
 Precompiled binaries enabled via `mise settings ruby.compile=false` to avoid slow source compilation.
 
 ### Activation (eval pattern)
@@ -26,7 +26,7 @@ Precompiled binaries enabled via `mise settings ruby.compile=false` to avoid slo
 Before running commands that need mise-managed tools, activate in your shell:
 
 ```bash
-eval "$($HOME/.local/bin/mise activate bash)"
+eval "$(/usr/local/bin/mise activate bash)"
 ```
 
 Activation must be included in every `terminal()` call chain, or run once at the start of a background session.
@@ -36,9 +36,9 @@ Activation must be included in every `terminal()` call chain, or run once at the
 For one-off commands, `mise exec` avoids the need for `eval activate`:
 
 ```bash
-cd /path/to/repo && $HOME/.local/bin/mise exec -- bundle install
-cd /path/to/repo && $HOME/.local/bin/mise exec -- rails test
-$HOME/.local/bin/mise exec --node@20 -- which node
+cd /path/to/repo && /usr/local/bin/mise exec -- bundle install
+cd /path/to/repo && /usr/local/bin/mise exec -- rails test
+/usr/local/bin/mise exec --node@20 -- which node
 ```
 
 ### Running Tasks
@@ -83,6 +83,8 @@ $HOME/.local/bin/mise exec -C ~/.hermes-openrouter/github-repos/REPO_NAME -- you
 - **Activation is per-session**: `mise activate` modifies PATH and env vars for the current shell only. It does NOT persist across separate `terminal()` calls unless chained into each command.
 - **Trust is per-file**: `mise trust` trusts a specific config file. If the file is modified or replaced, trust is revoked and must be re-applied.
 - **Compiling from source is slow**: Ruby compilation takes 5+ minutes and can hit timeouts. Precompiled binaries are configured via `ruby.compile=false` — if this setting is missing on a fresh install, set it before `mise install`.
-- **Never install globally**: Don't `apt install ruby` or `gem install` globally in mise-managed projects. Always use mise tool versions.
+- **System dependencies for Ruby gems**: Some gems require system-level development headers. For example, `psych` (a Rails dependency) requires `libyaml-dev` for YAML support. Install missing headers with `sudo apt-get install libyaml-dev` (and similar for other gems). If a gem fails to compile with a "missing *.h" error, search for and install the appropriate `-dev` package.
+- **psych gem compilation fallback**: If `libyaml-dev` isn't available as a system package (e.g., minimal containers), Ruby 3.4+ ships its own `yaml.h`. Point psych at it: `bundle config build.psych --with-cflags="-I$(ruby -e 'puts RbConfig::CONFIG["includedir"]')"`
 - **Working directory matters**: mise resolves tool versions from the current working directory upward through parent directories looking for config files. Always `cd` into the repo first, or use `mise exec -C <dir>` to specify explicitly.
 - **Config file naming**: mise accepts both `mise.toml` and `.mise.toml` (hidden). Some projects use `.tool-versions` (asdf-compatible). All three are recognized.
+- **Bundler is NOT a mise tool**: `bundler` (or `bundle`) is not in the mise tool registry. Do not add it to `[tools]` in mise.toml — it is managed by RubyGems/Ruby itself. Common tools that ARE supported: ruby, bun, node, python, go, java, etc.
